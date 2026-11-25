@@ -98,7 +98,9 @@ remove_ids() {
 }
 
 rdma_devices() {
-    ls -d /sys/class/infiniband/mlx5_* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' '
+    for d in /sys/class/infiniband/mlx5_*; do
+        [ -e "$d" ] && printf '%s ' "${d##*/}"
+    done
 }
 
 waiter_running() {
