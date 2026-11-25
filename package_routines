@@ -1,0 +1,3 @@
+# QDK package_routines. iSER Enabler needs no custom install/remove steps:
+# QTS runs `iser-enabler.sh stop` before removal, which removes the entries this
+# package added to /etc/nic_third_party.conf.

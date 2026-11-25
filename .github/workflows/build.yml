@@ -1,0 +1,56 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  QDK_VERSION: 2.5.3
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint
+        run: shellcheck -s sh shared/iser-enabler.sh
+
+      - name: Install QDK
+        run: |
+          curl -fsSLO "https://github.com/qnap-dev/QDK/releases/download/v${QDK_VERSION}/qdk_${QDK_VERSION}_amd64.deb"
+          sudo apt-get update -qq
+          sudo apt-get install -y "./qdk_${QDK_VERSION}_amd64.deb"
+
+      - name: Set version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver="0.0.${GITHUB_RUN_NUMBER}"
+          fi
+          sed -i "s/^QPKG_VER=.*/QPKG_VER=\"${ver}\"/" qpkg.cfg
+          echo "QPKG_VER=${ver}" >> "${GITHUB_ENV}"
+
+      - name: Build
+        run: |
+          qbuild
+          ls -l build/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iSEREnabler_${{ env.QPKG_VER }}
+          path: build/*
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*.qpkg
+          generate_release_notes: true

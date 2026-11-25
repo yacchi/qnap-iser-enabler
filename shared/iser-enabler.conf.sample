@@ -1,0 +1,8 @@
+# Copy to iser-enabler.conf in the package directory to use.
+# PCI ids are vid:did:svid:sdid in lower-case hex without 0x, space-separated.
+#
+# Cards that are not bound to mlx5_core when the service starts:
+#EXTRA_IDS="15b3:1017:15b3:0007"
+#
+# Cards that must never be added:
+#EXCLUDE_IDS=""
