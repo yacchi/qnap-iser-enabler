@@ -25,9 +25,28 @@ On every start (boot, or enabling the app):
    If Advanced Network Driver had already started before this app, it is started once more so it
    picks up the new entries.
 
+4. About a minute later, makes sure this package starts **before** Advanced Network Driver on the
+   next boot (see below).
+
 On stop / uninstall it removes only the entries it added. iSER stays enabled until the next reboot.
 
-It changes nothing else: no QNAP files are patched, and the card's firmware is never touched.
+### Start order
+
+QTS starts apps in the order of their sections in `qpkg.conf` (`/etc/rcS.d/QS100…`), and a newly
+installed app is appended, so right after installation this package starts *after* Advanced Network
+Driver. On the first boot it therefore falls back to starting Advanced Network Driver once more.
+
+To make Advanced Network Driver see the card on its own first start, this package moves its
+`[iSEREnabler]` section to just before `[AdvancedNetDriver]` in `/etc/config/qpkg.conf` and
+`/etc/config.local/qpkg.conf`. It checks again on every start, so the order is restored if QTS
+appends the section again (for example after an update). Before writing, it verifies that the new file
+holds exactly the same non-blank lines and the same sections in the same order apart from its own,
+otherwise it leaves the file alone; the previous file is kept as `qpkg.conf.iser-enabler.bak`.
+
+Advanced Network Driver still skips `iscsiadmin enable_iser 1` when `isert_scst` is already loaded,
+so this package runs that one command itself once the RDMA device exists.
+
+Apart from the section order above, it changes nothing else: no QNAP files are patched, and the card's firmware is never touched.
 Advanced Network Driver's own NIC firmware updater only targets cards with a QNAP PSID (`QNP*`).
 
 ## Requirements

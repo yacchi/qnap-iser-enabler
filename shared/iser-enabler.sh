@@ -19,9 +19,14 @@ MARK="# added by iSEREnabler"
 LOG="$QPKG_ROOT/iser-enabler.log"
 USER_CONF="$QPKG_ROOT/iser-enabler.conf"
 PIDFILE=/var/run/iser-enabler.pid
+ADN_NAME=AdvancedNetDriver
 ADN_INIT=/etc/init.d/AdvancedNetDriver.sh
 ADN_LOG=/tmp/AdvNetDriver.log
 ISCSIADMIN=/usr/local/sbin/iscsiadmin
+# QTS starts QPKGs in the order of their sections in qpkg.conf (/etc/rcS.d/QS100.. follows it),
+# and a newly installed QPKG is appended. This package must start before Advanced Network Driver.
+QPKG_CONFS="/etc/config/qpkg.conf /etc/config.local/qpkg.conf"
+REORDER_DELAY=60   # seconds after start before touching qpkg.conf (let boot-time writers finish)
 
 WAIT_MAX=600       # seconds to wait for an mlx5 RDMA device
 POLL=2             # seconds between checks
@@ -97,6 +102,59 @@ remove_ids() {
     log "removed own entries from $NIC_CONF"
 }
 
+section_list() {
+    grep -E '^\[.*\]$' "$1"
+}
+
+# 0 if [$QPKG_NAME] comes before [$ADN_NAME] in $1, or either is missing (nothing to do).
+order_ok() {
+    grep -qxF "[$QPKG_NAME]" "$1" || return 0
+    grep -qxF "[$ADN_NAME]" "$1" || return 0
+    first=$(section_list "$1" | grep -xE "\[($QPKG_NAME|$ADN_NAME)\]" | head -n 1)
+    [ "$first" = "[$QPKG_NAME]" ]
+}
+
+# Move the [$QPKG_NAME] section to just before [$ADN_NAME]. Nothing else changes: the result
+# must hold the same non-blank lines and the same sections in the same order apart from ours,
+# or the file is left untouched. The previous file is kept as $1.iser-enabler.bak.
+reorder_conf() {
+    f=$1
+    [ -f "$f" ] || return 0
+    order_ok "$f" && return 0
+    tmp="$f.iser-enabler.tmp"
+    awk -v me="[$QPKG_NAME]" -v before="[$ADN_NAME]" '
+        /^\[.*\]$/ { insec = ($0 == me) }
+        insec { blk[++m] = $0; next }
+        { line[++n] = $0 }
+        END {
+            for (i = 1; i <= n; i++) {
+                if (line[i] == before && !done) {
+                    for (j = 1; j <= m; j++) print blk[j]
+                    if (blk[m] != "") print ""
+                    done = 1
+                }
+                print line[i]
+            }
+        }
+    ' "$f" > "$tmp" || { rm -f "$tmp"; log "reorder: awk failed for $f"; return 1; }
+    if [ "$(grep -v '^$' "$f" | sort | cksum)" != "$(grep -v '^$' "$tmp" | sort | cksum)" ] ||
+        [ "$(section_list "$f" | grep -vxF "[$QPKG_NAME]")" != "$(section_list "$tmp" | grep -vxF "[$QPKG_NAME]")" ] ||
+        ! order_ok "$tmp"; then
+        rm -f "$tmp"
+        log "reorder: verification failed for $f, left untouched"
+        return 1
+    fi
+    cp -p "$f" "$f.iser-enabler.bak" && cat "$tmp" > "$f"
+    rm -f "$tmp"
+    log "reorder: moved [$QPKG_NAME] before [$ADN_NAME] in $f (takes effect at next boot)"
+}
+
+reorder_all() {
+    for f in $QPKG_CONFS; do
+        reorder_conf "$f"
+    done
+}
+
 rdma_devices() {
     for d in /sys/class/infiniband/mlx5_*; do
         [ -e "$d" ] && printf '%s ' "${d##*/}"
@@ -150,7 +208,12 @@ start() {
         log "waiter already running (pid $(cat "$PIDFILE"))"
         return 0
     fi
-    ( waiter; rm -f "$PIDFILE" ) > /dev/null 2>&1 &
+    (
+        waiter
+        sleep $REORDER_DELAY
+        reorder_all
+        rm -f "$PIDFILE"
+    ) > /dev/null 2>&1 &
     echo $! > "$PIDFILE"
 }
 
@@ -165,8 +228,13 @@ stop() {
 
 status() {
     echo "cards:  $(wanted_ids | tr '\n' ' ')"
-    echo "listed: $(grep -cF "$MARK" "$NIC_CONF" 2>/dev/null || echo 0) entr(y/ies) in $NIC_CONF"
+    n=$(grep -cF "$MARK" "$NIC_CONF" 2>/dev/null)
+    echo "listed: ${n:-0} entr(y/ies) added by this package in $NIC_CONF"
     echo "rdma:   $(rdma_devices)"
+    for f in $QPKG_CONFS; do
+        [ -f "$f" ] || continue
+        if order_ok "$f"; then echo "order:  ok in $f"; else echo "order:  after $ADN_NAME in $f (fixed in the background after start)"; fi
+    done
     if waiter_running; then echo "waiter: running (pid $(cat "$PIDFILE"))"; else echo "waiter: not running"; fi
     [ -f "$LOG" ] && tail -n 5 "$LOG"
 }
