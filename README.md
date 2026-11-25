@@ -43,6 +43,12 @@ appends the section again (for example after an update). Before writing, it veri
 holds exactly the same non-blank lines and the same sections in the same order apart from its own,
 otherwise it leaves the file alone; the previous file is kept as `qpkg.conf.iser-enabler.bak`.
 
+QTS does not wait for one app to finish starting before it starts the next, so even in this order
+Advanced Network Driver can check the card list a moment before this package has added its entries.
+The entries are therefore written as the very first step of the start, and if Advanced Network Driver
+still missed the card (it records `Sys_App = 0` in `/etc/config.local/qpkg.conf`), it is started once
+more right away. In practice iSER is enabled within seconds of Advanced Network Driver either way.
+
 Advanced Network Driver still skips `iscsiadmin enable_iser 1` when `isert_scst` is already loaded,
 so this package runs that one command itself once the RDMA device exists.
 

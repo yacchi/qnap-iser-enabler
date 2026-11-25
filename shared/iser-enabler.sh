@@ -21,7 +21,8 @@ USER_CONF="$QPKG_ROOT/iser-enabler.conf"
 PIDFILE=/var/run/iser-enabler.pid
 ADN_NAME=AdvancedNetDriver
 ADN_INIT=/etc/init.d/AdvancedNetDriver.sh
-ADN_LOG=/tmp/AdvNetDriver.log
+ADN_LOG=/tmp/AdvNetDriver.log            # written by Advanced Network Driver on each start (tmpfs: this boot only)
+ADN_CONF=/etc/config.local/qpkg.conf     # where it records Sys_App = 0 when no supported card was found
 ISCSIADMIN=/usr/local/sbin/iscsiadmin
 # QTS starts QPKGs in the order of their sections in qpkg.conf (/etc/rcS.d/QS100.. follows it),
 # and a newly installed QPKG is appended. This package must start before Advanced Network Driver.
@@ -29,9 +30,8 @@ QPKG_CONFS="/etc/config/qpkg.conf /etc/config.local/qpkg.conf"
 REORDER_DELAY=60   # seconds after start before touching qpkg.conf (let boot-time writers finish)
 
 WAIT_MAX=600       # seconds to wait for an mlx5 RDMA device
-POLL=2             # seconds between checks
-ADN_RETRY_SEEN=20  # restart Advanced Network Driver after this many seconds if it already ran this boot
-ADN_RETRY_ANY=180  # ... or after this many seconds in any case
+POLL=1             # seconds between checks
+ADN_RETRY_ANY=180  # restart Advanced Network Driver after this many seconds even without a failure sign
 
 # Optional user settings (space-separated vid:did:svid:sdid, lower-case hex, no 0x):
 #   EXTRA_IDS="15b3:1017:15b3:0007"   add cards that are not bound to mlx5_core at start time
@@ -60,9 +60,8 @@ hex() {
 
 # PCI ids (vid:did:svid:sdid) of non-QNAP physical functions driven by mlx5_core.
 present_ids() {
-    for d in /sys/bus/pci/devices/*; do
-        [ -e "$d/driver" ] || continue
-        [ "$(basename "$(readlink "$d/driver")")" = mlx5_core ] || continue
+    for d in /sys/bus/pci/drivers/mlx5_core/*:*:*.*; do
+        [ -e "$d/vendor" ] || continue
         [ -e "$d/physfn" ] && continue
         svid=$(hex "$d/subsystem_vendor")
         [ "$svid" = 1baa ] && continue   # QNAP-branded: already supported
@@ -165,16 +164,23 @@ waiter_running() {
     [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
 }
 
-# Wait for the RDMA device, restarting Advanced Network Driver once if it already ran without
-# seeing our ids (this service started after it), then enable iSER.
+# True when Advanced Network Driver has already run this boot and found no supported card,
+# i.e. it checked before our entries were in /etc/nic_third_party.conf.
+adn_missed_card() {
+    [ -f "$ADN_LOG" ] && [ "$(/sbin/getcfg "$ADN_NAME" Sys_App -d '' -f "$ADN_CONF")" = 0 ]
+}
+
+# Wait for the RDMA device. QTS starts QPKGs without waiting for the previous one to finish, so
+# Advanced Network Driver can still check the card list before start() has added our entries.
+# When that happened (it records Sys_App = 0), start it once more right away. Then enable iSER.
 waiter() {
     i=0
     retried=0
     while [ $i -lt $WAIT_MAX ]; do
         [ -n "$(rdma_devices)" ] && break
         if [ $retried -eq 0 ] && [ -x "$ADN_INIT" ]; then
-            if { [ -f "$ADN_LOG" ] && [ $i -ge $ADN_RETRY_SEEN ]; } || [ $i -ge $ADN_RETRY_ANY ]; then
-                log "no mlx5 RDMA device after ${i}s, starting Advanced Network Driver again"
+            if adn_missed_card || [ $i -ge $ADN_RETRY_ANY ]; then
+                log "no mlx5 RDMA device after ${i}s (Advanced Network Driver missed the card), starting it again"
                 "$ADN_INIT" start >> "$LOG" 2>&1
                 retried=1
             fi
@@ -196,14 +202,14 @@ waiter() {
 }
 
 start() {
+    # First thing: Advanced Network Driver may be checking the card list at this very moment.
+    add_ids
     trim_log
     log "start"
-    ids=$(wanted_ids)
-    if [ -z "$ids" ]; then
+    if [ -z "$(wanted_ids)" ]; then
         log "no non-QNAP mlx5 (ConnectX-4 or later) card found; nothing to do"
         return 0
     fi
-    add_ids
     if waiter_running; then
         log "waiter already running (pid $(cat "$PIDFILE"))"
         return 0
